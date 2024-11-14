@@ -1,0 +1,163 @@
+services:
+    # Nginx service
+    nginx:
+        container_name: kafka_nginx
+        image: nginx:alpine
+        ports:
+            - "8000:80"
+        volumes:
+            - ./:/var/www
+            - ./nginx.conf:/etc/nginx/conf.d/default.conf
+        depends_on:
+            - app
+        networks:
+            - laravel-network
+
+    # Application service (App)
+    app:
+        container_name: kafka_app
+        build: .
+        depends_on:
+            - db
+        volumes:
+            - ./:/var/www
+        networks:
+            - laravel-network
+
+    # MySQL database service
+    db:
+        container_name: kafka_db
+        image: mysql:8
+        restart: always
+        ports:
+            - "3308:3308"
+        environment:
+            MYSQL_DATABASE: to_do
+            MYSQL_ROOT_PASSWORD: root
+        volumes:
+            - kafka_db:/var/lib/mysql
+        networks:
+            - laravel-network
+
+    # Node.js service
+    kafka_node:
+        container_name: kafka_node
+        image: node:20
+        working_dir: /var/www
+        volumes:
+            - ./:/var/www
+        networks:
+            - laravel-network
+        command: bash -c "npm install && node /var/www/node/server.js"
+
+
+    # Zookeeper service for Kafka
+    zookeeper:
+        image: confluentinc/cp-zookeeper:6.2.0
+        container_name: zookeeper
+        environment:
+            ZOOKEEPER_CLIENT_PORT: 2181
+            ZOOKEEPER_TICK_TIME: 2000
+        networks:
+            - laravel-network
+
+    # Kafka service
+    kafka:
+        image: confluentinc/cp-kafka:6.2.0
+        hostname: kafka
+        container_name: kafka
+        depends_on:
+            - zookeeper
+        ports:
+            - "29092:29092"
+        environment:
+            KAFKA_BROKER_ID: 1
+            KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+            KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+            CONFLUENT_METRICS_ENABLE: 'false'
+            KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+        networks:
+            - laravel-network
+
+    # Schema Registry service
+    schema-registry:
+        image: confluentinc/cp-schema-registry:6.2.0
+        hostname: schema-registry
+        container_name: schema-registry
+        depends_on:
+            - zookeeper
+            - kafka
+        ports:
+            - "8008:8008"
+        environment:
+            SCHEMA_REGISTRY_HOST_NAME: schema-registry
+            SCHEMA_REGISTRY_LISTENERS: 'http://0.0.0.0:8008'
+            SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'PLAINTEXT://kafka:9092'
+        networks:
+            - laravel-network
+
+    # MySQL service for Debezium
+    mysql:
+        image: debezium/example-mysql:1.2
+        container_name: mysql
+        ports:
+            - 3309:3307
+        environment:
+            - MYSQL_ROOT_PASSWORD=root
+            - MYSQL_USER=root
+            - MYSQL_PASSWORD=root
+        volumes:
+            - ${PWD}/data/movies.sql:/docker-entrypoint-initdb.d/z99_dump.sql
+        networks:
+            - laravel-network
+
+    # Connect Debezium service
+    connect-debezium:
+        image: debezium/connect:1.6
+        container_name: connect-debezium
+        depends_on:
+            - kafka
+            - mysql
+            - schema-registry
+        ports:
+            - 8083:8083
+        environment:
+            BOOTSTRAP_SERVERS: kafka:9092
+            GROUP_ID: connect-debezium
+            CONFIG_STORAGE_TOPIC: docker-connect-debezium-configs
+            OFFSET_STORAGE_TOPIC: docker-connect-debezium-offsets
+            STATUS_STORAGE_TOPIC: docker-connect-debezium-status
+            KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+            VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+            CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8008
+            CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8008
+        volumes:
+            - ${PWD}/scripts:/scripts
+        networks:
+            - laravel-network
+
+    # Kafka Manager service
+    kafka-manager:
+        image: hlebalbau/kafka-manager:latest
+        container_name: kafka-manager
+        depends_on:
+            - kafka
+        ports:
+            - "9000:9000"
+        environment:
+            - ZK_HOSTS=zookeeper:2181
+            - APPLICATION_SECRET=letmein
+        networks:
+            - laravel-network
+
+networks:
+    laravel-network:
+        driver: bridge
+
+volumes:
+    kafka_db:
